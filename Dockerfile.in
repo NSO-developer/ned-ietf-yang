@@ -1,0 +1,54 @@
+ARG NSO_IMAGE_PATH
+ARG NSO_VERSION
+
+# DEP_START
+# DEP_END
+
+
+# Compile local packages in the build stage
+FROM ${NSO_IMAGE_PATH}cisco-nso-dev:${NSO_VERSION} AS build
+ARG PKG_FILE
+
+COPY / /src
+RUN for PKG in $(find /src/packages /src/test-packages -mindepth 1 -maxdepth 1 -type d); do \
+  make -C ${PKG}/src || exit 1; \
+  make -f /src/nid/bmd.mk -C ${PKG} build-meta-data.xml; \
+  if [ -d ${PKG}/netsim ]; then make -C ${PKG}/netsim || exit 1; fi; \
+  done
+
+
+# build a netsim docker image by copying the compiled NED and changing the
+# default CMD to one that runs netsim, thus running this docker image will per
+# default startup a netsim instance
+FROM ${NSO_IMAGE_PATH}cisco-nso-dev:${NSO_VERSION} AS netsim
+
+COPY --from=build /src/packages /var/opt/ncs/packages
+COPY /run-netsim.sh /run-netsim.sh
+
+VOLUME ["/netsim"]
+
+ENTRYPOINT []
+CMD ["/run-netsim.sh"]
+
+
+# produce an NSO image that comes loaded with our NED - perfect for our testing,
+# but probably not anything beyond that since you typically want more NSO
+# packages for a production environment
+FROM ${NSO_IMAGE_PATH}cisco-nso-base:${NSO_VERSION} AS testnso
+
+# DEP_INC_START
+# DEP_INC_END
+
+COPY --from=build /src/packages/ /var/opt/ncs/packages/
+COPY --from=build /src/test-packages/ /var/opt/ncs/packages/
+
+# Copy in extra files as an overlay, for example additions to
+# /etc/ncs/pre-ncs-start.d/
+COPY extra-files /
+
+
+# build a minimal image that only contains the NED itself - perfect way to
+# distribute the compiled NED by relying on Docker package registry
+# infrastructure
+FROM scratch AS package
+COPY --from=build /src/packages/ /var/opt/ncs/packages/
